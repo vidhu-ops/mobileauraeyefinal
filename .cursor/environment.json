@@ -3,15 +3,15 @@
   "install": "npm install",
   "ports": [
     {
-      "name": "auraeye",
-      "port": 5001
+      "name": "auraeye-preview",
+      "port": 34567
     }
   ],
   "terminals": [
     {
       "name": "dev-server",
-      "command": "PORT=5001 npm run dev",
-      "description": "AuraEye Express + Vite dev server on port 5001"
+      "command": "PORT=34567 npm run dev",
+      "description": "AuraEye dev server on port 34567 (unique port to avoid preview conflicts)"
     }
   ]
 }

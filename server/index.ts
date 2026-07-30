@@ -20,6 +20,15 @@ app.get('/health', (req, res) => {
   res.status(200).json({ status: 'ok', timestamp: new Date().toISOString() });
 });
 
+app.get('/api/app-info', (_req, res) => {
+  res.status(200).json({
+    app: 'AuraEye',
+    repo: 'mobileauraeyefinal',
+    description: 'Spiritual wellness platform',
+    timestamp: new Date().toISOString(),
+  });
+});
+
 // Root endpoint for health checks
 app.get('/', (req, res, next) => {
   // If this is a health check request, respond quickly
