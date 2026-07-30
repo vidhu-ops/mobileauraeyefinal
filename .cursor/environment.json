@@ -1,0 +1,17 @@
+{
+  "name": "AuraEye",
+  "install": "npm install",
+  "ports": [
+    {
+      "name": "app",
+      "port": 5000
+    }
+  ],
+  "terminals": [
+    {
+      "name": "dev-server",
+      "command": "npm run dev",
+      "description": "AuraEye Express + Vite dev server on port 5000"
+    }
+  ]
+}
