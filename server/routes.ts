@@ -3416,17 +3416,19 @@ function calculateDominantSoulChakra(birthDate: string): number {
       }
 
       const allUsers = await storage.getAllUsers();
-      const healers = allUsers
-        .filter((u: any) => u.userType === "healer" || u.userType === "semi-healer")
-        .map((u: any) => ({
-          id: u.id,
-          username: u.username,
-          name: u.name,
-          userType: u.userType,
-          credits: u.credits,
-          isActive: u.isActive,
-          email: u.email,
-        }));
+      const healers = await Promise.all(
+        allUsers
+          .filter((u: any) => u.userType === "healer" || u.userType === "semi-healer")
+          .map(async (u: any) => ({
+            id: u.id,
+            username: u.username,
+            name: u.name,
+            userType: u.userType,
+            credits: await storage.getUserCredits(u.id),
+            isActive: u.isActive,
+            email: u.email,
+          }))
+      );
 
       res.json(healers);
     } catch (error) {
@@ -5551,11 +5553,16 @@ function calculateDominantSoulChakra(birthDate: string): number {
       
       // Update password
       await storage.updateUserPassword(user.id, hashedPassword);
+
+      // Keep healer login table in sync for healer accounts
+      if (user.userType === "healer" || user.userType === "semi-healer") {
+        await storage.updateHealerPassword(user.username, hashedPassword);
+      }
       
       // Mark token as used
       await storage.markPasswordResetTokenAsUsed(resetTokenRecord.id);
 
-      console.log(`✅ Password reset successful for user: ${normalizedUsername}`);
+      console.log(`✅ Password reset successful for user: ${user.username}`);
       res.json({ message: "Password reset successfully" });
     } catch (error: any) {
       console.error("[ERROR] Password reset failed:", error);

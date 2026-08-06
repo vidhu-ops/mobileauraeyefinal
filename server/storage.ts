@@ -632,7 +632,9 @@ export class DatabaseStorage implements IStorage {
       return STATIC_HEALERS_MAP[username];
     }
 
-    const [healer] = await db.select().from(healers).where(eq(healers.username, username));
+    const [healer] = await db.select().from(healers).where(
+      sql`LOWER(${healers.username}) = LOWER(${username})`
+    );
     return healer || undefined;
   }
 
@@ -648,7 +650,7 @@ export class DatabaseStorage implements IStorage {
     const [healer] = await db
       .update(healers)
       .set({ password: hashedPassword })
-      .where(eq(healers.username, username))
+      .where(sql`LOWER(${healers.username}) = LOWER(${username})`)
       .returning();
     return healer || undefined;
   }
