@@ -1,6 +1,7 @@
 import { users, type User, type InsertUser, auraReadings, type AuraReading, type InsertAuraReading, journals, type Journal, type InsertJournal, numerologyReadings, type NumerologyReading, type InsertNumerologyReading, objectAnalyses, type ObjectAnalysis, type InsertObjectAnalysis, healers, type Healer, type InsertHealer, healerBookings, type HealerBooking, type InsertHealerBooking, healerRatings, type HealerRating, type InsertHealerRating, healerBadges, type HealerBadge, type InsertHealerBadge, userAchievements, vibeFeedback, type VibeFeedback, type InsertVibeFeedback, vibeReadings, type VibeReading, type InsertVibeReading, creditTransactions, type CreditTransaction, type InsertCreditTransaction, passwordResetTokens, type PasswordResetToken, type InsertPasswordResetToken, pdfStorage, type PdfStorage, type InsertPdfStorage, moodSnapshots, type MoodSnapshot, type InsertMoodSnapshot, pushSubscriptions, type PushSubscription, type InsertPushSubscription, meditationSessions, type MeditationSession, type InsertMeditationSession, favoriteMeditations, type FavoriteMeditation, type InsertFavoriteMeditation, achievements, type Achievement, type InsertAchievement, notifications, type Notification, type InsertNotification, loginSessions } from "../shared/schema";
 import { db } from "./db";
 import { eq, and, gt, desc, or, gte, lt, sql, count } from "drizzle-orm";
+import { getCreditCostForService } from "./credit-policy";
 import createMemoryStore from "memorystore";
 import session from "express-session";
 import connectPg from "connect-pg-simple";
@@ -810,7 +811,7 @@ export class DatabaseStorage implements IStorage {
       console.error("Credit expiry check failed:", e);
     }
     const [user] = await db.select().from(users).where(eq(users.id, userId));
-    return user?.credits || 0;
+    return user?.credits ?? 0;
   }
 
   async deductCredits(userId: number, amount: number, type: string, description: string): Promise<boolean> {
@@ -965,15 +966,7 @@ export class DatabaseStorage implements IStorage {
     const user = await this.getUser(userId);
     if (!user) return 1;
 
-    const costs: Record<string, any> = {
-      'aura_analysis': { client: 5, healer: 5, semi_healer: 5, free_trial: 5 },
-      'vibe_check': { client: 1, healer: 1, semi_healer: 1, free_trial: 1 },
-      'numerology': { client: 3, healer: 3, semi_healer: 3, free_trial: 3 },
-      'object_analysis': { client: 2, healer: 2, semi_healer: 2, free_trial: 2 }
-    };
-
-    const type = user.userType || 'client';
-    return costs[serviceType]?.[type] ?? 1;
+    return getCreditCostForService(serviceType);
   }
 
   // Store PDF

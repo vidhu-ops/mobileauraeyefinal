@@ -1434,6 +1434,16 @@ export async function registerRoutes(app: Express): Promise<Server> {
       // Save the object analysis to database if user is authenticated
       let savedAnalysis = null;
       if (req.isAuthenticated() && req.user) {
+        const objectCreditCost = await storage.getCreditCost(req.user.id, "object_analysis");
+        const creditDeducted = await storage.deductCredits(
+          req.user.id,
+          objectCreditCost,
+          "object_analysis",
+          `Object analysis for ${analysisName}`,
+        );
+        if (!creditDeducted) {
+          return res.status(402).json({ error: "Insufficient credits" });
+        }
         try {
           // Create a compressed image URL for storage (already resized by resizeImageToStandard)
           const imageUrl = `data:image/jpeg;base64,${imgBuffer.toString('base64')}`;
@@ -1456,24 +1466,24 @@ export async function registerRoutes(app: Express): Promise<Server> {
             detailedAnalysis: deterministicResult.detailedAnalysis
           });
           
-          // Deduct credits for successful analysis
-          const creditDeducted = await storage.deductCredits(req.user!.id, req.creditCost!, 'object_analysis', `Object analysis for ${analysisName}`);
-          if (!creditDeducted) {
-            return res.status(402).json({ error: "Insufficient credits" });
-          }
           console.log('Object analysis credit deduction result:', creditDeducted);
           
           // Add soul energy (credits * 100) for completing object analysis
           try {
-            const soulEnergyAmount = (req.creditCost || 1) * 100;
-            await storage.addSoulEnergy(req.user!.id, soulEnergyAmount, 'object_analysis', 'Object analysis scan completed');
+            const soulEnergyAmount = objectCreditCost * 100;
+            await storage.addSoulEnergy(req.user!.id, soulEnergyAmount, 'object_analysis');
             console.log(`⚡ Added +${soulEnergyAmount} soul energy to user ${req.user.id} for object analysis completion`);
           } catch (soulEnergyError) {
             console.error("Error adding soul energy:", soulEnergyError);
           }
         } catch (saveError) {
           console.error("Error saving object analysis:", saveError);
-          // Continue even if saving fails
+          await storage.addCredits(
+            req.user.id,
+            objectCreditCost,
+            "credit_refund",
+            `Refund for failed object analysis save: ${analysisName}`,
+          );
         }
       }
       
@@ -1878,6 +1888,22 @@ async function detectHumanInImage(imageBuffer: Buffer): Promise<boolean> {
         };
       }
 
+      // Charge before persistence so a saved reading can never exist without its debit.
+      let auraCreditsCharged = false;
+      const auraCreditCost = req.user ? await storage.getCreditCost(req.user.id, "aura_analysis") : 0;
+      if (req.user && auraCreditCost > 0) {
+        const deductionResult = await storage.deductCredits(
+          req.user.id,
+          auraCreditCost,
+          "aura_analysis",
+          `Aura analysis for ${analysisName}`,
+        );
+        if (!deductionResult) {
+          return res.status(402).json({ error: "Insufficient credits", message: "You do not have enough credits for this service." });
+        }
+        auraCreditsCharged = true;
+      }
+
       // Always save each aura reading to database if user is authenticated (each reading should have unique ID)
       if (req.isAuthenticated() && req.user) {
         try {
@@ -1925,35 +1951,25 @@ async function detectHumanInImage(imageBuffer: Buffer): Promise<boolean> {
           }
         } catch (saveError) {
           console.error("Error saving aura reading:", saveError);
-          // Don't fail the whole request if saving fails
+          if (auraCreditsCharged) {
+            await storage.addCredits(
+              req.user.id,
+              auraCreditCost,
+              "credit_refund",
+              `Refund for failed aura analysis save: ${analysisName}`,
+            );
+          }
         }
       }
 
-      // Deduct credits for authenticated users (regardless of whether analysis is cached for consistency)
-      console.log(`Credit deduction check: user=${!!req.user}, userId=${req.user?.id}, creditCost=${req.creditCost}`);
-      
-      if (req.user && req.user.id && req.creditCost > 0) {
-        try {
-          const deductionResult = await storage.deductCredits(req.user.id, req.creditCost, 'aura_analysis', `Aura analysis for ${analysisName}`);
-          if (!deductionResult) {
-            console.log(`Credit deduction failed for user ${req.user.id}: insufficient credits`);
-            return res.status(402).json({ error: "Insufficient credits", message: "You do not have enough credits for this service." });
-          }
-          console.log(`Credit deduction result: ${deductionResult}, deducted ${req.creditCost} credits for aura analysis`);
-        } catch (creditError) {
-          console.error("Error deducting credits:", creditError);
-          return res.status(500).json({ error: "Internal server error during credit processing" });
-        }
-      } else {
-        console.log(`Credit deduction skipped: unauthenticated user or no credit cost`);
-      }
+      console.log(`Aura credit deduction completed before persistence: user=${req.user?.id}, creditCost=${auraCreditCost}`);
 
       // Add soul energy (credits * 100) for completing aura analysis
       if (req.isAuthenticated() && req.user) {
         try {
-          const soulEnergyAmount = (req.creditCost || 5) * 100;
-          await storage.addSoulEnergy(req.user.id, soulEnergyAmount, 'aura_analysis', 'Aura analysis scan completed');
-          console.log(`⚡ Added +${soulEnergyAmount} soul energy to user ${req.user.id} for aura analysis completion (${req.creditCost} credits × 100)`);
+          const soulEnergyAmount = auraCreditCost * 100;
+          await storage.addSoulEnergy(req.user.id, soulEnergyAmount, 'aura_analysis');
+          console.log(`⚡ Added +${soulEnergyAmount} soul energy to user ${req.user.id} for aura analysis completion (${auraCreditCost} credits × 100)`);
         } catch (soulEnergyError) {
           console.error("Error adding soul energy:", soulEnergyError);
         }
@@ -2133,6 +2149,7 @@ async function detectHumanInImage(imageBuffer: Buffer): Promise<boolean> {
       }
       
       let numerologyProfile: NumerologyResult;
+      const numerologyCost = await storage.getCreditCost(req.user!.id, "numerology");
       let savedReading: any = null;
       
       try {
@@ -2193,10 +2210,9 @@ async function detectHumanInImage(imageBuffer: Buffer): Promise<boolean> {
           console.log("Achievement update skipped:", ach);
         }
         
-        // Deduct credits for successful numerology reading
-        // All users pay 3 credits for numerology
-        const numerologyCost = 3;
-        const deductionResult = await storage.deductCredits(req.user.id, numerologyCost, 'numerology', `Numerology reading for ${name}`);
+        // Deduct the canonical numerology cost after the reading succeeds.
+        const numerologyCost = await storage.getCreditCost(req.user!.id, "numerology");
+        const deductionResult = await storage.deductCredits(req.user!.id, numerologyCost, 'numerology', `Numerology reading for ${name}`);
         if (!deductionResult) {
           return res.status(402).json({ error: "Insufficient credits" });
         }
@@ -2315,10 +2331,9 @@ async function detectHumanInImage(imageBuffer: Buffer): Promise<boolean> {
           interpretation: numerologyProfile.interpretation
         });
         
-        // Deduct credits for successful numerology reading
-        // All users pay 3 credits for numerology
-        const numerologyCost = 3;
-        const deductionResult = await storage.deductCredits(req.user.id, numerologyCost, 'numerology', `Numerology reading for ${name}`);
+        // Deduct the canonical numerology cost after the reading succeeds.
+        const numerologyCost = await storage.getCreditCost(req.user!.id, "numerology");
+        const deductionResult = await storage.deductCredits(req.user!.id, numerologyCost, 'numerology', `Numerology reading for ${name}`);
         if (!deductionResult) {
           return res.status(402).json({ error: "Insufficient credits" });
         }
@@ -2389,6 +2404,7 @@ async function detectHumanInImage(imageBuffer: Buffer): Promise<boolean> {
       }
       
       let numerologyProfile: NumerologyResult;
+      const numerologyCost = await storage.getCreditCost(req.user!.id, "numerology");
       
       try {
         // Try using the API-based calculation
@@ -2414,16 +2430,16 @@ async function detectHumanInImage(imageBuffer: Buffer): Promise<boolean> {
         numerologyProfile.readingId = savedReading.id;
         
         // Deduct credits
-        const deductionResult = await storage.deductCredits(req.user!.id, req.creditCost!, 'numerology', `Numerology reading for ${name}`);
+        const deductionResult = await storage.deductCredits(req.user!.id, numerologyCost, 'numerology', `Numerology reading for ${name}`);
         if (!deductionResult) {
           return res.status(402).json({ error: "Insufficient credits" });
         }
         
         // Add soul energy (credits * 100) for completing numerology analysis
         try {
-          const soulEnergyAmount = (req.creditCost || 3) * 100;
-          await storage.addSoulEnergy(req.user!.id, soulEnergyAmount, 'numerology_analysis', 'Numerology analysis completed');
-          console.log(`⚡ Added +${soulEnergyAmount} soul energy to user ${req.user!.id} for numerology analysis completion (${req.creditCost || 3} credits × 100)`);
+          const soulEnergyAmount = numerologyCost * 100;
+          await storage.addSoulEnergy(req.user!.id, soulEnergyAmount, 'numerology_analysis');
+          console.log(`⚡ Added +${soulEnergyAmount} soul energy to user ${req.user!.id} for numerology analysis completion (${numerologyCost} credits × 100)`);
         } catch (soulEnergyError) {
           console.error("Error adding soul energy:", soulEnergyError);
         }
@@ -2477,9 +2493,9 @@ async function detectHumanInImage(imageBuffer: Buffer): Promise<boolean> {
           
           // Add soul energy (credits * 100) for completing numerology analysis (fallback path)
           try {
-            const soulEnergyAmount = (req.creditCost || 3) * 100;
-            await storage.addSoulEnergy(req.user.id, soulEnergyAmount, 'numerology_analysis', 'Numerology analysis completed');
-            console.log(`⚡ Added +${soulEnergyAmount} soul energy to user ${req.user.id} for numerology analysis completion (fallback: ${req.creditCost || 3} credits × 100)`);
+            const soulEnergyAmount = numerologyCost * 100;
+            await storage.addSoulEnergy(req.user.id, soulEnergyAmount, 'numerology_analysis');
+            console.log(`⚡ Added +${soulEnergyAmount} soul energy to user ${req.user.id} for numerology analysis completion (fallback: ${numerologyCost} credits × 100)`);
           } catch (soulEnergyError) {
             console.error("Error adding soul energy:", soulEnergyError);
           }
@@ -2577,10 +2593,11 @@ async function detectHumanInImage(imageBuffer: Buffer): Promise<boolean> {
             interpretation: numerologyProfile.interpretation
           });
           
-          // Add soul energy +300 for completing numerology analysis (3 credits * 100)
+          // Add soul energy proportional to the canonical numerology cost.
           try {
-            await storage.addSoulEnergy(req.user.id, 300, 'numerology_analysis', 'Numerology analysis completed');
-            console.log(`⚡ Added +300 soul energy to user ${req.user.id} for numerology analysis completion`);
+            const numerologyCost = await storage.getCreditCost(req.user.id, "numerology");
+            await storage.addSoulEnergy(req.user.id, numerologyCost * 100, 'numerology_analysis');
+            console.log(`⚡ Added +${numerologyCost * 100} soul energy to user ${req.user.id} for numerology analysis completion`);
           } catch (soulEnergyError) {
             console.error("Error adding soul energy:", soulEnergyError);
           }
@@ -3060,8 +3077,8 @@ function calculateDominantSoulChakra(birthDate: string): number {
 
       // Add soul energy (credits * 100) to client for booking a healer
       try {
-        const clientSoulEnergyAmount = 3 * 100; // 3 credits = 300 soul energy
-        await storage.addSoulEnergy(user.id, clientSoulEnergyAmount, 'healer_booking', 'Booked healer session');
+        const clientSoulEnergyAmount = 3 * 100;
+        await storage.addSoulEnergy(user.id, clientSoulEnergyAmount, 'healer_booking');
         console.log(`⚡ Added +${clientSoulEnergyAmount} soul energy to user ${user.id} for healer booking`);
       } catch (soulEnergyError) {
         console.error("Error adding soul energy:", soulEnergyError);
@@ -4154,7 +4171,19 @@ function calculateDominantSoulChakra(birthDate: string): number {
 
       // Save vibe reading to database for healer dashboard tracking
       let savedVibeReading = null;
+      const vibeCreditCost = req.user ? await storage.getCreditCost(req.user.id, "vibe_check") : 0;
+      let vibeCreditsCharged = false;
       if (req.user) {
+        const deductionResult = await storage.deductCredits(
+          req.user.id,
+          vibeCreditCost,
+          "vibe_check",
+          "Quick vibe analysis",
+        );
+        if (!deductionResult) {
+          return res.status(402).json({ error: "Insufficient credits" });
+        }
+        vibeCreditsCharged = true;
         try {
           // Generate session ID for tracking
           const sessionId = Date.now().toString() + '-' + req.user.id;
@@ -4205,19 +4234,20 @@ function calculateDominantSoulChakra(birthDate: string): number {
           console.log(`📊 Healer ${req.user.username} completed vibe reading - should appear in dashboard immediately`);
         } catch (error) {
           console.error('Failed to save vibe reading to dashboard:', error);
-          // Don't fail the request if saving fails, just log the error
-        }
-        
-        // Deduct credits for successful analysis
-        const deductionResult = await storage.deductCredits(req.user.id, req.creditCost, 'vibe_check', 'Quick vibe analysis');
-        if (!deductionResult) {
-          return res.status(402).json({ error: "Insufficient credits" });
+          if (vibeCreditsCharged) {
+            await storage.addCredits(
+              req.user.id,
+              vibeCreditCost,
+              "credit_refund",
+              "Refund for failed vibe reading save",
+            );
+          }
         }
         
         // Add soul energy (credits * 100) for completing vibe scan
-        const vibeSoulEnergyAmount = (req.creditCost || 1) * 100;
+        const vibeSoulEnergyAmount = vibeCreditCost * 100;
         await storage.addSoulEnergy(req.user.id, vibeSoulEnergyAmount, 'vibe_scan', 'What\'s My Vibe scan completed');
-        console.log(`⚡ Added +${vibeSoulEnergyAmount} soul energy to user ${req.user.id} for vibe scan completion (${req.creditCost || 1} credits × 100)`);
+        console.log(`⚡ Added +${vibeSoulEnergyAmount} soul energy to user ${req.user.id} for vibe scan completion (${vibeCreditCost} credits × 100)`);
         
         // Check and award achievements for vibe scans
         try {

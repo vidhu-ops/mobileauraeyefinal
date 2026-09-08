@@ -2,6 +2,7 @@ import { type User, users, type InsertUser, creditTransactions, healers, pushSub
 import { eq, sql, desc, lt, and, gt } from "drizzle-orm";
 import { db } from "./db";
 import { IStorage, createSessionStore } from "./storage";
+import { getCreditCostForService } from "./credit-policy";
 
 
 export class DatabaseStorage implements IStorage {
@@ -568,7 +569,7 @@ export class DatabaseStorage implements IStorage {
     // Credit management
     async getUserCredits(userId: number): Promise<number> {
         const [user] = await db.select().from(users).where(eq(users.id, userId));
-        return user?.credits || 0;
+        return user?.credits ?? 0;
     }
 
     async deductCredits(userId: number, amount: number, type: string, description: string): Promise<boolean> {
@@ -685,15 +686,7 @@ export class DatabaseStorage implements IStorage {
         const user = await this.getUser(userId);
         if (!user) return 1;
 
-        const costs: Record<string, any> = {
-            'aura_analysis': { client: 5, healer: 5, semi_healer: 5, free_trial: 5 },
-            'vibe_check': { client: 1, healer: 1, semi_healer: 1, free_trial: 1 },
-            'numerology': { client: 3, healer: 3, semi_healer: 3, free_trial: 3 },
-            'object_analysis': { client: 2, healer: 2, semi_healer: 2, free_trial: 2 }
-        };
-
-        const type = user.userType || 'client';
-        return costs[serviceType]?.[type] ?? 1;
+        return getCreditCostForService(serviceType);
     }
 
     // Store PDF

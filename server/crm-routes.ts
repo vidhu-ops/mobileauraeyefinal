@@ -22,7 +22,11 @@ import {
   crmLeads,
 } from "../shared/schema";
 import { addCreditGrant, daysFromNow, listCreditGrants, replaceCreditBalance } from "./credit-grants";
-import { getCreditIntegrityReport, reconcileAllCreditLedgers } from "./credit-reconciliation";
+import {
+  getCreditIntegrityReport,
+  reconcileAllCreditLedgers,
+  reconcileHistoricalServiceCredits,
+} from "./credit-reconciliation";
 
 type AuthedRequest = Request & { user?: Express.User; crmAccess?: CrmPerms };
 
@@ -377,6 +381,7 @@ export function registerCrmRoutes(app: Express) {
     }
 
     try {
+      const serviceCorrection = await reconcileHistoricalServiceCredits();
       const result = await reconcileAllCreditLedgers();
       await writeAudit({
         actor: req.user,
@@ -389,6 +394,7 @@ export function registerCrmRoutes(app: Express) {
           openingTransactionsAdded: result.openingTransactionsAdded,
           grantsAdded: result.grantsAdded,
           usernamesRepaired: result.usernamesRepaired,
+          serviceCorrection,
           remainingDiscrepancies: {
             chainMismatches: result.report.chainMismatches,
             balanceMismatches: result.report.balanceMismatches,
@@ -412,7 +418,7 @@ export function registerCrmRoutes(app: Express) {
           note: "Credit ledger reconciliation correction",
         });
       }
-      res.json(result);
+      res.json({ ...result, serviceCorrection });
     } catch (error) {
       console.error("CRM credit reconciliation error:", error);
       res.status(500).json({ message: "Failed to reconcile credit ledgers" });
@@ -619,6 +625,7 @@ export function registerCrmRoutes(app: Express) {
         credits,
         creditSummary: {
           currentBalance: currentCredits,
+          negativeBalance: currentCredits < 0,
           transactionCount: credits.length,
           creditsIssued: issuedCredits,
           creditsUsed: usedCredits,
@@ -635,6 +642,16 @@ export function registerCrmRoutes(app: Express) {
             numerology: Math.max(0, serviceUsage.numerology - transactionUsage.numerology),
             object: Math.max(0, serviceUsage.object - transactionUsage.object),
           },
+          expectedServiceCost:
+            serviceUsage.aura * 5 +
+            serviceUsage.object * 1 +
+            serviceUsage.numerology * 1 +
+            serviceUsage.vibe * 1,
+          recordedServiceCost:
+            transactionUsage.aura * 5 +
+            transactionUsage.object * 1 +
+            transactionUsage.numerology * 1 +
+            transactionUsage.vibe * 1,
           firstTransactionAt: credits[credits.length - 1]?.createdAt || null,
           lastTransactionAt: latestCredit?.createdAt || null,
         },

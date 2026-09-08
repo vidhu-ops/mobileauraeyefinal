@@ -719,6 +719,7 @@ export default function AdminCrmApp() {
                       ["Credits used", creditHealthQuery.data?.totalCreditsUsed],
                       ["Chain issues", creditHealthQuery.data?.chainMismatches],
                       ["Balance issues", creditHealthQuery.data?.balanceMismatches],
+                      ["Negative balances", creditHealthQuery.data?.negativeBalances],
                     ].map(([label, value]) => (
                       <div key={label} className="rounded-lg bg-slate-50 border border-slate-100 p-2 text-center">
                         <div className="font-semibold text-base">{Number(value || 0).toLocaleString()}</div>
@@ -731,6 +732,7 @@ export default function AdminCrmApp() {
                       ["Username issues", creditHealthQuery.data?.usernameMismatches],
                       ["Grant issues", creditHealthQuery.data?.grantMismatches],
                       ["Users without ledger", creditHealthQuery.data?.usersWithoutLedger],
+                      ["Service issues", creditHealthQuery.data?.serviceMismatches],
                     ].map(([label, value]) => (
                       <div key={label} className="rounded-lg border border-slate-100 px-3 py-2 flex justify-between">
                         <span className="text-slate-600">{label}</span>
@@ -762,13 +764,21 @@ export default function AdminCrmApp() {
                                 u.chainMismatches ||
                                 u.usernameMismatches ||
                                 u.grantMismatch ||
+                                u.negativeBalance ||
+                                u.serviceDifference ||
+                                Object.values(u.serviceActivity || {}).some(
+                                  (count: any, index: number) =>
+                                    count !== Object.values(u.serviceTransactions || {})[index],
+                                ) ||
                                 (u.lastTransactionBalance !== null && u.lastTransactionBalance !== u.credits) ||
                                 (u.transactionCount === 0 && u.credits !== 0),
                             )
                             .map((u: any) => (
                               <tr key={u.userId} className="border-b border-slate-100 last:border-0">
                                 <td className="px-3 py-2">@{u.username}</td>
-                                <td className="px-3 py-2 text-right font-mono">{u.credits}</td>
+                                <td className={`px-3 py-2 text-right font-mono ${u.negativeBalance ? "text-rose-700 font-semibold" : ""}`}>
+                                  {u.credits}
+                                </td>
                                 <td className="px-3 py-2 text-right font-mono">{u.creditsUsed}</td>
                                 <td className="px-3 py-2 text-right font-mono">{u.transactionCount}</td>
                                 <td className="px-3 py-2 text-amber-700">
@@ -776,6 +786,8 @@ export default function AdminCrmApp() {
                                     u.chainMismatches ? `${u.chainMismatches} chain` : "",
                                     u.usernameMismatches ? `${u.usernameMismatches} username` : "",
                                     u.grantMismatch ? "grant" : "",
+                                    u.negativeBalance ? "negative balance" : "",
+                                    u.serviceDifference ? `service ${u.serviceDifference > 0 ? "+" : ""}${u.serviceDifference}` : "",
                                     u.lastTransactionBalance !== null && u.lastTransactionBalance !== u.credits ? "balance" : "",
                                   ]
                                     .filter(Boolean)
@@ -790,6 +802,12 @@ export default function AdminCrmApp() {
                           u.chainMismatches ||
                           u.usernameMismatches ||
                           u.grantMismatch ||
+                          u.negativeBalance ||
+                          u.serviceDifference ||
+                          Object.values(u.serviceActivity || {}).some(
+                            (count: any, index: number) =>
+                              count !== Object.values(u.serviceTransactions || {})[index],
+                          ) ||
                           (u.lastTransactionBalance !== null && u.lastTransactionBalance !== u.credits) ||
                           (u.transactionCount === 0 && u.credits !== 0),
                       ).length === 0 && <p className="p-4 text-sm text-emerald-700">All credit records agree.</p>}

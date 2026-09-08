@@ -39,7 +39,8 @@ export async function expireCreditsForUser(userId: number): Promise<number> {
           .where(eq(creditGrants.id, grant.id));
       }
 
-      const newCredits = Math.max(0, Number(user.credits || 0) - totalExpired);
+      // Preserve a negative balance. Expiry must not erase an existing debt.
+      const newCredits = Number(user.credits ?? 0) - totalExpired;
       await tx.update(users).set({ credits: newCredits }).where(eq(users.id, userId));
       await tx.insert(creditTransactions).values({
         userId,
@@ -118,9 +119,9 @@ export async function addCreditGrant(params: {
 }
 
 /** FIFO consume remaining from active (non-expired) grants. */
-export async function consumeCreditGrants(userId: number, amount: number, tx?: typeof db): Promise<void> {
+export async function consumeCreditGrants(userId: number, amount: number, tx?: any): Promise<void> {
   const runner = tx ?? db;
-  const run = async (client: typeof db) => {
+  const run = async (client: any) => {
     const now = new Date();
     const grants = await client
       .select()
@@ -179,7 +180,7 @@ export async function replaceCreditBalance(params: {
   createdByUserId?: number | null;
   note?: string;
 }): Promise<number> {
-  const newCredits = Math.max(0, Math.floor(Number(params.newCredits)));
+  const newCredits = Math.floor(Number(params.newCredits));
   return await db.transaction(async (tx) => {
     const [user] = await tx.select().from(users).where(eq(users.id, params.userId)).for("update");
     if (!user) throw new Error("User not found");

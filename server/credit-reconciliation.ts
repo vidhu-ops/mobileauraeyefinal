@@ -1,6 +1,16 @@
-import { asc, eq } from "drizzle-orm";
+import { and, asc, eq } from "drizzle-orm";
 import { db } from "./db";
-import { creditGrants, creditTransactions, users } from "../shared/schema";
+import {
+  auraReadings,
+  creditGrants,
+  creditTransactions,
+  numerologyReadings,
+  objectAnalyses,
+  users,
+  vibeReadings,
+} from "../shared/schema";
+import { consumeCreditGrants } from "./credit-grants";
+import { BILLABLE_SERVICE_TYPES, CREDIT_COSTS, type BillableServiceType } from "./credit-policy";
 
 type CreditRow = typeof creditTransactions.$inferSelect;
 type UserRow = typeof users.$inferSelect;
@@ -18,6 +28,12 @@ export type CreditUserReport = {
   usernameMismatches: number;
   grantRemaining: number;
   grantMismatch: boolean;
+  serviceActivity: Record<BillableServiceType, number>;
+  serviceTransactions: Record<BillableServiceType, number>;
+  serviceExpected: number;
+  serviceRecorded: number;
+  serviceDifference: number;
+  negativeBalance: boolean;
 };
 
 export type CreditIntegrityReport = {
@@ -32,6 +48,10 @@ export type CreditIntegrityReport = {
   usernameMismatches: number;
   grantMismatches: number;
   usersWithoutLedger: number;
+  negativeBalances: number;
+  serviceMismatches: number;
+  totalServiceExpected: number;
+  totalServiceRecorded: number;
   users: CreditUserReport[];
 };
 
@@ -43,12 +63,82 @@ function correctionType(type: string) {
   return type === "ledger_opening" || type === "ledger_reconciliation";
 }
 
+type ServiceUsage = {
+  activity: Record<BillableServiceType, number>;
+  transactions: Record<BillableServiceType, number>;
+  recorded: number;
+};
+
+function emptyServiceCounts(): Record<BillableServiceType, number> {
+  return {
+    aura_analysis: 0,
+    object_analysis: 0,
+    numerology: 0,
+    vibe_check: 0,
+  };
+}
+
+function addActivity(
+  map: Map<number, Record<BillableServiceType, number>>,
+  service: BillableServiceType,
+  userId: number,
+  performedBy?: number | null,
+) {
+  const add = (actorId: number) => {
+    const counts = map.get(actorId) || emptyServiceCounts();
+    counts[service] += 1;
+    map.set(actorId, counts);
+  };
+  add(userId);
+  if (performedBy && performedBy !== userId) add(performedBy);
+}
+
+async function getServiceUsage(): Promise<Map<number, ServiceUsage>> {
+  const [aura, object, numerology, vibes, transactions] = await Promise.all([
+    db.select({ userId: auraReadings.userId, performedBy: auraReadings.performedBy }).from(auraReadings),
+    db.select({ userId: objectAnalyses.userId, performedBy: objectAnalyses.performedBy }).from(objectAnalyses),
+    db.select({ userId: numerologyReadings.userId, performedBy: numerologyReadings.performedBy }).from(numerologyReadings),
+    db.select({ userId: vibeReadings.userId }).from(vibeReadings),
+    db.select().from(creditTransactions),
+  ]);
+
+  const activity = new Map<number, Record<BillableServiceType, number>>();
+  aura.forEach((row) => addActivity(activity, "aura_analysis", row.userId, row.performedBy));
+  object.forEach((row) => addActivity(activity, "object_analysis", row.userId, row.performedBy));
+  numerology.forEach((row) => addActivity(activity, "numerology", row.userId, row.performedBy));
+  vibes.forEach((row) => addActivity(activity, "vibe_check", row.userId));
+
+  const result = new Map<number, ServiceUsage>();
+  activity.forEach((counts, userId) => {
+    result.set(userId, {
+      activity: counts,
+      transactions: emptyServiceCounts(),
+      recorded: 0,
+    });
+  });
+  for (const transaction of transactions) {
+    if (transaction.amount >= 0) continue;
+    const service = transaction.transactionType as BillableServiceType;
+    if (!BILLABLE_SERVICE_TYPES.includes(service)) continue;
+    const usage = result.get(transaction.userId) || {
+      activity: emptyServiceCounts(),
+      transactions: emptyServiceCounts(),
+      recorded: 0,
+    };
+    usage.transactions[service] += 1;
+    usage.recorded += Math.abs(transaction.amount);
+    result.set(transaction.userId, usage);
+  }
+  return result;
+}
+
 export async function getCreditIntegrityReport(): Promise<CreditIntegrityReport> {
   const [allUsers, allTransactions, allGrants] = await Promise.all([
     db.select().from(users).orderBy(asc(users.id)),
     db.select().from(creditTransactions).orderBy(asc(creditTransactions.createdAt), asc(creditTransactions.id)),
     db.select().from(creditGrants).orderBy(asc(creditGrants.userId), asc(creditGrants.createdAt), asc(creditGrants.id)),
   ]);
+  const serviceUsage = await getServiceUsage();
 
   const txByUser = new Map<number, CreditRow[]>();
   for (const tx of allTransactions) {
@@ -72,6 +162,10 @@ export async function getCreditIntegrityReport(): Promise<CreditIntegrityReport>
   let usersWithoutLedger = 0;
   let totalCreditsIssued = 0;
   let totalCreditsUsed = 0;
+  let negativeBalances = 0;
+  let serviceMismatches = 0;
+  let totalServiceExpected = 0;
+  let totalServiceRecorded = 0;
 
   const userReports = allUsers.map((user: UserRow): CreditUserReport => {
     const transactions = txByUser.get(user.id) || [];
@@ -101,7 +195,26 @@ export async function getCreditIntegrityReport(): Promise<CreditIntegrityReport>
       .reduce((sum, grant) => sum + asNumber(grant.remaining), 0);
 
     const currentCredits = asNumber(user.credits);
-    const grantMismatch = grantRemaining !== currentCredits;
+    const usage = serviceUsage.get(user.id) || {
+      activity: emptyServiceCounts(),
+      transactions: emptyServiceCounts(),
+      recorded: 0,
+    };
+    const serviceExpected = BILLABLE_SERVICE_TYPES.reduce(
+      (sum, service) => sum + usage.activity[service] * CREDIT_COSTS[service],
+      0,
+    );
+    const serviceDifference = usage.recorded - serviceExpected;
+    totalServiceExpected += serviceExpected;
+    totalServiceRecorded += usage.recorded;
+    if (serviceDifference !== 0 || BILLABLE_SERVICE_TYPES.some((service) => usage.activity[service] !== usage.transactions[service])) {
+      serviceMismatches += 1;
+    }
+    if (currentCredits < 0) negativeBalances += 1;
+    // A negative balance is a debt, not an unrepresented positive grant.
+    const grantMismatch = currentCredits >= 0
+      ? grantRemaining !== currentCredits
+      : grantRemaining !== 0;
     if (transactions.length === 0 && currentCredits !== 0) usersWithoutLedger += 1;
     if (previousBalance !== null && previousBalance !== currentCredits) balanceMismatches += 1;
     if (userChainMismatches) chainMismatches += userChainMismatches;
@@ -123,6 +236,12 @@ export async function getCreditIntegrityReport(): Promise<CreditIntegrityReport>
       usernameMismatches: userUsernameMismatches,
       grantRemaining,
       grantMismatch,
+      serviceActivity: usage.activity,
+      serviceTransactions: usage.transactions,
+      serviceExpected,
+      serviceRecorded: usage.recorded,
+      serviceDifference,
+      negativeBalance: currentCredits < 0,
     };
   });
 
@@ -138,7 +257,146 @@ export async function getCreditIntegrityReport(): Promise<CreditIntegrityReport>
     usernameMismatches,
     grantMismatches,
     usersWithoutLedger,
+    negativeBalances,
+    serviceMismatches,
+    totalServiceExpected,
+    totalServiceRecorded,
     users: userReports,
+  };
+}
+
+export type ServiceCreditCorrectionResult = {
+  usersProcessed: number;
+  usersChanged: number;
+  missingServiceTransactions: number;
+  policyAdjustments: number;
+  creditsAddedBack: number;
+  creditsDebited: number;
+  changedUsers: Array<{ userId: number; username: string; balanceBefore: number; balanceAfter: number }>;
+};
+
+/**
+ * Corrects the one-time historical mismatch found by the production audit.
+ *
+ * Missing service uses are written as normal service transactions so the
+ * activity and ledger counts agree. Price changes are then represented by one
+ * explicit positive/negative policy adjustment. Existing transaction amounts
+ * are never rewritten. The marker transaction makes this safe to repeat.
+ */
+export async function reconcileHistoricalServiceCredits(): Promise<ServiceCreditCorrectionResult> {
+  const [allUsers, usageByUser] = await Promise.all([
+    db.select().from(users).orderBy(asc(users.id)),
+    getServiceUsage(),
+  ]);
+  let usersChanged = 0;
+  let missingServiceTransactions = 0;
+  let policyAdjustments = 0;
+  let creditsAddedBack = 0;
+  let creditsDebited = 0;
+  const changedUsers: ServiceCreditCorrectionResult["changedUsers"] = [];
+
+  for (const user of allUsers) {
+    const usage = usageByUser.get(user.id);
+    if (!usage) continue;
+    const markers = await db
+      .select({ id: creditTransactions.id })
+      .from(creditTransactions)
+      .where(
+        and(
+          eq(creditTransactions.userId, user.id),
+          eq(creditTransactions.transactionType, "credit_policy_reconciliation"),
+        ),
+      );
+    if (markers.length > 0) continue;
+
+    const missingByService = emptyServiceCounts();
+    let missingCharge = 0;
+    for (const service of BILLABLE_SERVICE_TYPES) {
+      missingByService[service] = Math.max(0, usage.activity[service] - usage.transactions[service]);
+      missingCharge += missingByService[service] * CREDIT_COSTS[service];
+    }
+    const expected = BILLABLE_SERVICE_TYPES.reduce(
+      (sum, service) => sum + usage.activity[service] * CREDIT_COSTS[service],
+      0,
+    );
+    const policyAdjustment = usage.recorded + missingCharge - expected;
+    if (missingCharge === 0 && policyAdjustment === 0) continue;
+
+    const change = await db.transaction(async (tx) => {
+      const [lockedUser] = await tx.select().from(users).where(eq(users.id, user.id)).for("update");
+      if (!lockedUser) return null;
+      let balance = asNumber(lockedUser.credits);
+      let missingRows = 0;
+
+      for (const service of BILLABLE_SERVICE_TYPES) {
+        for (let i = 0; i < missingByService[service]; i += 1) {
+          const amount = -CREDIT_COSTS[service];
+          balance += amount;
+          await consumeCreditGrants(user.id, -amount, tx);
+          await tx.insert(creditTransactions).values({
+            userId: user.id,
+            username: lockedUser.username,
+            amount,
+            transactionType: service,
+            description: `Historical reconciliation: missing ${service} usage ${i + 1}/${missingByService[service]}`,
+            balanceAfter: balance,
+          });
+          missingRows += 1;
+        }
+      }
+
+      if (policyAdjustment !== 0) {
+        balance += policyAdjustment;
+        if (policyAdjustment > 0) {
+          await tx.insert(creditGrants).values({
+            userId: user.id,
+            amount: policyAdjustment,
+            remaining: policyAdjustment,
+            expiresAt: null,
+            source: "credit_policy_reconciliation",
+            note: "Refund for historical service pricing difference",
+            createdByUserId: null,
+          });
+        } else {
+          await consumeCreditGrants(user.id, Math.abs(policyAdjustment), tx);
+        }
+      }
+
+      await tx.update(users).set({ credits: balance }).where(eq(users.id, user.id));
+      await tx.insert(creditTransactions).values({
+        userId: user.id,
+        username: lockedUser.username,
+        amount: policyAdjustment,
+        transactionType: "credit_policy_reconciliation",
+        description: `Historical service policy correction: expected ${expected}, recorded ${usage.recorded}, missing-service charges ${missingCharge}`,
+        balanceAfter: balance,
+      });
+      return { before: asNumber(lockedUser.credits), after: balance, missingRows };
+    });
+
+    if (change) {
+      usersChanged += 1;
+      missingServiceTransactions += change.missingRows;
+      if (policyAdjustment > 0) creditsAddedBack += policyAdjustment;
+      if (policyAdjustment < 0) creditsDebited += Math.abs(policyAdjustment);
+      policyAdjustments += 1;
+      changedUsers.push({
+        userId: user.id,
+        username: user.username,
+        balanceBefore: change.before,
+        balanceAfter: change.after,
+      });
+    }
+  }
+
+  return {
+    usersProcessed: allUsers.length,
+    usersChanged,
+    missingServiceTransactions,
+    policyAdjustments,
+    creditsAddedBack,
+    creditsDebited,
+    changedUsers,
   };
 }
 

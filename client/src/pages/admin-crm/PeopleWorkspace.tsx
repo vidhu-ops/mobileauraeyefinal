@@ -745,12 +745,17 @@ export default function PeopleWorkspace({
                           </div>
                           <div
                             className={`rounded-lg border px-3 py-2 text-xs ${
-                              summary.balanceDiscrepancy || uncharged
+                              summary.negativeBalance || summary.balanceDiscrepancy || uncharged
                                 ? "border-amber-200 bg-amber-50 text-amber-800"
                                 : "border-emerald-200 bg-emerald-50 text-emerald-800"
                             }`}
                           >
-                            {summary.balanceDiscrepancy || uncharged ? (
+                            {summary.negativeBalance ? (
+                              <span className="inline-flex items-center gap-1 text-rose-700 font-semibold">
+                                <AlertTriangle className="h-3.5 w-3.5" />
+                                Negative balance: {summary.currentBalance} credits
+                              </span>
+                            ) : summary.balanceDiscrepancy || uncharged ? (
                               <span className="inline-flex items-center gap-1">
                                 <AlertTriangle className="h-3.5 w-3.5" />
                                 {summary.balanceDiscrepancy
