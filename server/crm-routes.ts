@@ -650,7 +650,7 @@ export function registerCrmRoutes(app: Express) {
           recordedServiceCost:
             transactionUsage.aura * 5 +
             transactionUsage.object * 1 +
-            transactionUsage.numerology * 1 +
+            transactionUsage.numerology * 3 +
             transactionUsage.vibe * 1,
           firstTransactionAt: credits[credits.length - 1]?.createdAt || null,
           lastTransactionAt: latestCredit?.createdAt || null,

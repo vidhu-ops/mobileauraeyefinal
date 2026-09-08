@@ -13,6 +13,12 @@ export const CREDIT_COSTS = {
 
 export type BillableServiceType = keyof typeof CREDIT_COSTS;
 
+const NON_BILLABLE_SERVICE_COSTS: Record<string, number> = {
+  healer_booking: 0,
+  journaling: 0,
+  meditation: 0,
+};
+
 // Increment this when a pricing-policy change requires a fresh historical
 // reconciliation pass. Older correction markers remain auditable but do not
 // prevent the new policy from being applied.
@@ -21,6 +27,9 @@ export const CREDIT_POLICY_RECONCILIATION_MARKER =
   `credit_policy_reconciliation_${CREDIT_POLICY_VERSION}`;
 
 export function getCreditCostForService(serviceType: string): number {
+  if (serviceType in NON_BILLABLE_SERVICE_COSTS) {
+    return NON_BILLABLE_SERVICE_COSTS[serviceType];
+  }
   return CREDIT_COSTS[serviceType as BillableServiceType] ?? 1;
 }
 

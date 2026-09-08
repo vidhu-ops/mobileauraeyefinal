@@ -49,7 +49,7 @@ function checkCredits(serviceType: string) {
       });
     }
     
-    if (userCredits < requiredCredits) {
+    if (requiredCredits > 0 && userCredits < requiredCredits) {
       return res.status(402).json({ 
         error: "Insufficient credits",
         message: `You need ${requiredCredits} credits to use this service. You have ${userCredits} credits.`,
@@ -86,7 +86,7 @@ function optionalCheckCredits(serviceType: string) {
       });
     }
     
-    if (userCredits < requiredCredits) {
+    if (requiredCredits > 0 && userCredits < requiredCredits) {
       return res.status(402).json({ 
         error: "Insufficient credits",
         message: `You need ${requiredCredits} credits to use this service. You have ${userCredits} credits.`,
@@ -99,6 +99,32 @@ function optionalCheckCredits(serviceType: string) {
     req.creditCost = requiredCredits;
     next();
   };
+}
+
+async function chargeAndSaveActivity<T>(
+  userId: number,
+  amount: number,
+  transactionType: string,
+  description: string,
+  save: () => Promise<T>,
+): Promise<{ ok: true; value: T } | { ok: false }> {
+  const charged = await storage.deductCredits(userId, amount, transactionType, description);
+  if (!charged) return { ok: false };
+
+  try {
+    return { ok: true, value: await save() };
+  } catch (error) {
+    const refunded = await storage.addCredits(
+      userId,
+      amount,
+      "credit_refund",
+      `Refund for failed ${transactionType} save: ${description}`,
+    );
+    if (!refunded) {
+      console.error(`Failed to refund ${transactionType} after persistence failure for user ${userId}`);
+    }
+    throw error;
+  }
 }
 
 
@@ -2159,18 +2185,28 @@ async function detectHumanInImage(imageBuffer: Buffer): Promise<boolean> {
         console.log('Returning healer numerology profile:', numerologyProfile);
         
           // Save the numerology reading for the healer
-          const savedReading = await storage.saveNumerologyReading({
-            userId: req.user.id,
-            performedBy: req.user.userType === 'healer' ? req.user.id : null,
-            name,
-            birthDate,
-            lifePathNumber: numerologyProfile.lifePathNumber,
-            destinyNumber: numerologyProfile.destinyNumber,
-            soulUrgeNumber: numerologyProfile.soulUrgeNumber,
-            personalityNumber: numerologyProfile.personalityNumber,
-            personalYearNumber: numerologyProfile.personalYearNumber,
-            interpretation: numerologyProfile.interpretation
-          });
+          const savedResult = await chargeAndSaveActivity(
+            req.user.id,
+            numerologyCost,
+            "numerology",
+            `Numerology reading for ${name}`,
+            () => storage.saveNumerologyReading({
+              userId: req.user.id,
+              performedBy: req.user.userType === 'healer' ? req.user.id : null,
+              name,
+              birthDate,
+              lifePathNumber: numerologyProfile.lifePathNumber,
+              destinyNumber: numerologyProfile.destinyNumber,
+              soulUrgeNumber: numerologyProfile.soulUrgeNumber,
+              personalityNumber: numerologyProfile.personalityNumber,
+              personalYearNumber: numerologyProfile.personalYearNumber,
+              interpretation: numerologyProfile.interpretation
+            }),
+          );
+          if (!savedResult.ok) {
+            return res.status(402).json({ error: "Insufficient credits" });
+          }
+          const savedReading = savedResult.value;
 
           // Check and award achievements
           try {
@@ -2208,13 +2244,6 @@ async function detectHumanInImage(imageBuffer: Buffer): Promise<boolean> {
           }
         } catch (ach) {
           console.log("Achievement update skipped:", ach);
-        }
-        
-        // Deduct the canonical numerology cost after the reading succeeds.
-        const numerologyCost = await storage.getCreditCost(req.user!.id, "numerology");
-        const deductionResult = await storage.deductCredits(req.user!.id, numerologyCost, 'numerology', `Numerology reading for ${name}`);
-        if (!deductionResult) {
-          return res.status(402).json({ error: "Insufficient credits" });
         }
         
         // Check and award achievements
@@ -2318,25 +2347,28 @@ async function detectHumanInImage(imageBuffer: Buffer): Promise<boolean> {
         };
         
         // Save the fallback numerology reading for the healer
-        savedReading = await storage.saveNumerologyReading({
-          userId: req.user.id,
-          performedBy: req.user.userType === 'healer' ? req.user.id : null,
-          name,
-          birthDate,
-          lifePathNumber: numerologyProfile.lifePathNumber,
-          destinyNumber: numerologyProfile.destinyNumber,
-          soulUrgeNumber: numerologyProfile.soulUrgeNumber,
-          personalityNumber: numerologyProfile.personalityNumber,
-          personalYearNumber: numerologyProfile.personalYearNumber,
-          interpretation: numerologyProfile.interpretation
-        });
-        
-        // Deduct the canonical numerology cost after the reading succeeds.
-        const numerologyCost = await storage.getCreditCost(req.user!.id, "numerology");
-        const deductionResult = await storage.deductCredits(req.user!.id, numerologyCost, 'numerology', `Numerology reading for ${name}`);
-        if (!deductionResult) {
+        const savedResult = await chargeAndSaveActivity(
+          req.user.id,
+          numerologyCost,
+          "numerology",
+          `Numerology reading for ${name}`,
+          () => storage.saveNumerologyReading({
+            userId: req.user.id,
+            performedBy: req.user.userType === 'healer' ? req.user.id : null,
+            name,
+            birthDate,
+            lifePathNumber: numerologyProfile.lifePathNumber,
+            destinyNumber: numerologyProfile.destinyNumber,
+            soulUrgeNumber: numerologyProfile.soulUrgeNumber,
+            personalityNumber: numerologyProfile.personalityNumber,
+            personalYearNumber: numerologyProfile.personalYearNumber,
+            interpretation: numerologyProfile.interpretation
+          }),
+        );
+        if (!savedResult.ok) {
           return res.status(402).json({ error: "Insufficient credits" });
         }
+        savedReading = savedResult.value;
       }
       
       // Create comprehensive response structure for healer dashboard
@@ -2412,28 +2444,32 @@ async function detectHumanInImage(imageBuffer: Buffer): Promise<boolean> {
         
         console.log('Returning numerology profile:', numerologyProfile);
         
-        // Save the numerology reading and capture the ID
-        const savedReading = await storage.saveNumerologyReading({
-          userId: req.user!.id,
-          performedBy: (req.user as User).userType === 'healer' || (req.user as User).userType === 'semi-healer' ? req.user!.id : null,
-          name,
-          birthDate,
-          lifePathNumber: numerologyProfile.lifePathNumber,
-          destinyNumber: numerologyProfile.destinyNumber,
-          soulUrgeNumber: numerologyProfile.soulUrgeNumber,
-          personalityNumber: numerologyProfile.personalityNumber,
-          personalYearNumber: numerologyProfile.personalYearNumber || 5,
-          interpretation: numerologyProfile.interpretation
-        });
+        // Charge before saving so a persisted reading always has a matching debit.
+        const savedResult = await chargeAndSaveActivity(
+          req.user!.id,
+          numerologyCost,
+          "numerology",
+          `Numerology reading for ${name}`,
+          () => storage.saveNumerologyReading({
+            userId: req.user!.id,
+            performedBy: (req.user as User).userType === 'healer' || (req.user as User).userType === 'semi-healer' ? req.user!.id : null,
+            name,
+            birthDate,
+            lifePathNumber: numerologyProfile.lifePathNumber,
+            destinyNumber: numerologyProfile.destinyNumber,
+            soulUrgeNumber: numerologyProfile.soulUrgeNumber,
+            personalityNumber: numerologyProfile.personalityNumber,
+            personalYearNumber: numerologyProfile.personalYearNumber || 5,
+            interpretation: numerologyProfile.interpretation
+          }),
+        );
+        if (!savedResult.ok) {
+          return res.status(402).json({ error: "Insufficient credits" });
+        }
+        const savedReading = savedResult.value;
         
         // Include the reading ID in the response for PDF saving
         numerologyProfile.readingId = savedReading.id;
-        
-        // Deduct credits
-        const deductionResult = await storage.deductCredits(req.user!.id, numerologyCost, 'numerology', `Numerology reading for ${name}`);
-        if (!deductionResult) {
-          return res.status(402).json({ error: "Insufficient credits" });
-        }
         
         // Add soul energy (credits * 100) for completing numerology analysis
         try {
@@ -2452,6 +2488,7 @@ async function detectHumanInImage(imageBuffer: Buffer): Promise<boolean> {
           destinyNumber: calculateDestiny(name),
           soulUrgeNumber: calculateSoulUrge(name),
           personalityNumber: calculatePersonality(birthDate),
+          personalYearNumber: 5,
           soulChakraNumber: calculateSoulChakra(birthDate),
           interpretation: `Your Life Path Number ${calculateLifePath(birthDate)} indicates your life's journey Your Destiny Number ${calculateDestiny(name)} reveals your goals and abilities Your Soul Urge Number ${calculateSoulUrge(name)} shows your inner desires, while your Personality Number ${calculatePersonality(birthDate)} represents your decision-making chakra Your Soul Chakra Number ${calculateSoulChakra(birthDate)} reveals your spiritual energy center.`,
           colorAssociations: {
@@ -2475,18 +2512,28 @@ async function detectHumanInImage(imageBuffer: Buffer): Promise<boolean> {
         };
         
         if (req.isAuthenticated() && req.user) {
-          const savedReading = await storage.saveNumerologyReading({
-            userId: req.user.id,
-            performedBy: (req.user as User).userType === 'healer' ? req.user.id : null,
-            name,
-            birthDate,
-            lifePathNumber: numerologyProfile.lifePathNumber,
-            destinyNumber: numerologyProfile.destinyNumber,
-            soulUrgeNumber: numerologyProfile.soulUrgeNumber,
-            personalityNumber: numerologyProfile.personalityNumber,
-            personalYearNumber: 5,
-            interpretation: numerologyProfile.interpretation
-          });
+          const savedResult = await chargeAndSaveActivity(
+            req.user.id,
+            numerologyCost,
+            "numerology",
+            `Numerology reading for ${name}`,
+            () => storage.saveNumerologyReading({
+              userId: req.user.id,
+              performedBy: (req.user as User).userType === 'healer' ? req.user.id : null,
+              name,
+              birthDate,
+              lifePathNumber: numerologyProfile.lifePathNumber,
+              destinyNumber: numerologyProfile.destinyNumber,
+              soulUrgeNumber: numerologyProfile.soulUrgeNumber,
+              personalityNumber: numerologyProfile.personalityNumber,
+              personalYearNumber: 5,
+              interpretation: numerologyProfile.interpretation
+            }),
+          );
+          if (!savedResult.ok) {
+            return res.status(402).json({ error: "Insufficient credits" });
+          }
+          const savedReading = savedResult.value;
           
           // Include the reading ID in the response for PDF saving
           numerologyProfile.readingId = savedReading.id;
@@ -3008,7 +3055,7 @@ function calculateDominantSoulChakra(birthDate: string): number {
     }
   })();
 
-  // Healer booking API endpoint with email notification - 3 credits to client, 1 to healer
+  // Healer booking API endpoint with email notification - finding a healer is free
   app.post("/api/book-session", isAuthenticated, checkCredits('healer_booking'), async (req, res) => {
     try {
       const user = req.user as any;
@@ -3029,25 +3076,6 @@ function calculateDominantSoulChakra(birthDate: string): number {
 
       console.log(`✅ Healer found: ${healer.name}`);
 
-      // Deduct 3 credits from client
-      const creditDeducted = await storage.deductCredits(
-        user.id,
-        3,
-        "healer_booking",
-        `Healer booking with ${healer.name}`
-      );
-
-      if (!creditDeducted) {
-        console.error(`Failed to deduct credits from user ${user.id}`);
-        return res.status(400).json({ 
-          message: "Failed to deduct credits. Please try again.",
-          requiredCredits: 3,
-          currentCredits: await storage.getUserCredits(user.id)
-        });
-      }
-
-      console.log(`💳 Credits deducted from user ${user.id}`);
-
       // For permanent contacts, use their mapped userId; otherwise get healer user
       let healerUser;
       if (PERMANENT_CONTACTS[healerId as keyof typeof PERMANENT_CONTACTS]) {
@@ -3057,32 +3085,8 @@ function calculateDominantSoulChakra(birthDate: string): number {
         healerUser = await storage.getUserByUsername(healer.username);
       }
 
-      if (healerUser) {
-        await storage.addCredits(
-          healerUser.id,
-          1,
-          "healer_booking_credit",
-          `Credit from booking by ${user.username}`
-        );
-        
-        // Add soul energy (credits * 100) for healer connection
-        try {
-          const healerSoulEnergyAmount = 1 * 100; // 1 credit = 100 soul energy
-          await storage.addSoulEnergy(healerUser.id, healerSoulEnergyAmount, 'healer_booking', 'Healer booking connection');
-          console.log(`⚡ Added +${healerSoulEnergyAmount} soul energy to healer ${healerUser.id} for booking connection`);
-        } catch (soulEnergyError) {
-          console.error("Error adding soul energy to healer:", soulEnergyError);
-        }
-      }
-
-      // Add soul energy (credits * 100) to client for booking a healer
-      try {
-        const clientSoulEnergyAmount = 3 * 100;
-        await storage.addSoulEnergy(user.id, clientSoulEnergyAmount, 'healer_booking');
-        console.log(`⚡ Added +${clientSoulEnergyAmount} soul energy to user ${user.id} for healer booking`);
-      } catch (soulEnergyError) {
-        console.error("Error adding soul energy:", soulEnergyError);
-      }
+      // Finding/booking a healer is intentionally non-billable.
+      console.log(`🆓 Healer booking for user ${user.id} carries no credit charge`);
 
       // Create booking record - use healer ID directly (no FK constraint now)
       console.log(`📋 Creating booking record with data:`, { userId: user.id, healerId, message });

@@ -573,6 +573,10 @@ export class DatabaseStorage implements IStorage {
     }
 
     async deductCredits(userId: number, amount: number, type: string, description: string): Promise<boolean> {
+        if (!Number.isFinite(amount) || amount <= 0) {
+            console.error(`DeductCredits: invalid deduction amount ${amount}`);
+            return false;
+        }
         return await db.transaction(async (tx) => {
             const [user] = await tx.select().from(users).where(eq(users.id, userId)).for('update');
             if (!user) {
