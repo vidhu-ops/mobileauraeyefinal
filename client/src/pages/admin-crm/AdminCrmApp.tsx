@@ -742,17 +742,45 @@ export default function AdminCrmApp() {
                       </div>
                     ))}
                   </div>
+                  <div className="rounded-xl border border-slate-200 bg-white p-3 space-y-2">
+                    <div className="flex items-center justify-between gap-3">
+                      <span className="text-sm font-medium text-slate-700">Service-cost audit</span>
+                      <span className="text-xs text-slate-500">Current policy</span>
+                    </div>
+                    <div className="grid grid-cols-2 sm:grid-cols-5 gap-2 text-xs">
+                      {[
+                        ["Expected", creditHealthQuery.data?.totalServiceExpected],
+                        ["Recorded", creditHealthQuery.data?.totalServiceRecorded],
+                        [
+                          "Difference",
+                          Number(creditHealthQuery.data?.totalServiceRecorded || 0) -
+                            Number(creditHealthQuery.data?.totalServiceExpected || 0),
+                        ],
+                        ["Numerology", 3],
+                        ["Aura / Object / Vibe", "5 / 1 / 1"],
+                      ].map(([label, value]) => (
+                        <div key={label} className="rounded-lg bg-slate-50 border border-slate-100 p-2 text-center">
+                          <div className="font-semibold text-base">
+                            {typeof value === "number" ? value.toLocaleString() : value}
+                          </div>
+                          <div className="text-slate-500">{label}</div>
+                        </div>
+                      ))}
+                    </div>
+                  </div>
                   <div className="rounded-xl border border-slate-200 overflow-hidden">
                     <div className="px-3 py-2 bg-slate-50 border-b border-slate-200 text-sm font-medium">
                       Accounts needing attention
                     </div>
                     <div className="max-h-64 overflow-auto">
-                      <table className="w-full min-w-[700px] text-xs">
+                      <table className="w-full min-w-[900px] text-xs">
                         <thead className="sticky top-0 bg-white border-b border-slate-200 text-left text-slate-500">
                           <tr>
                             <th className="px-3 py-2">User</th>
                             <th className="px-3 py-2 text-right">Current</th>
                             <th className="px-3 py-2 text-right">Used</th>
+                            <th className="px-3 py-2 text-right">Expected</th>
+                            <th className="px-3 py-2 text-right">Recorded</th>
                             <th className="px-3 py-2 text-right">Transactions</th>
                             <th className="px-3 py-2">Issues</th>
                           </tr>
@@ -780,6 +808,8 @@ export default function AdminCrmApp() {
                                   {u.credits}
                                 </td>
                                 <td className="px-3 py-2 text-right font-mono">{u.creditsUsed}</td>
+                                <td className="px-3 py-2 text-right font-mono">{u.serviceExpected}</td>
+                                <td className="px-3 py-2 text-right font-mono">{u.serviceRecorded}</td>
                                 <td className="px-3 py-2 text-right font-mono">{u.transactionCount}</td>
                                 <td className="px-3 py-2 text-amber-700">
                                   {[

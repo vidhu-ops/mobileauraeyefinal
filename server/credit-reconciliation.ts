@@ -10,7 +10,12 @@ import {
   vibeReadings,
 } from "../shared/schema";
 import { consumeCreditGrants } from "./credit-grants";
-import { BILLABLE_SERVICE_TYPES, CREDIT_COSTS, type BillableServiceType } from "./credit-policy";
+import {
+  BILLABLE_SERVICE_TYPES,
+  CREDIT_COSTS,
+  CREDIT_POLICY_RECONCILIATION_MARKER,
+  type BillableServiceType,
+} from "./credit-policy";
 
 type CreditRow = typeof creditTransactions.$inferSelect;
 type UserRow = typeof users.$inferSelect;
@@ -304,7 +309,7 @@ export async function reconcileHistoricalServiceCredits(): Promise<ServiceCredit
       .where(
         and(
           eq(creditTransactions.userId, user.id),
-          eq(creditTransactions.transactionType, "credit_policy_reconciliation"),
+          eq(creditTransactions.transactionType, CREDIT_POLICY_RECONCILIATION_MARKER),
         ),
       );
     if (markers.length > 0) continue;
@@ -353,7 +358,7 @@ export async function reconcileHistoricalServiceCredits(): Promise<ServiceCredit
             amount: policyAdjustment,
             remaining: policyAdjustment,
             expiresAt: null,
-            source: "credit_policy_reconciliation",
+            source: CREDIT_POLICY_RECONCILIATION_MARKER,
             note: "Refund for historical service pricing difference",
             createdByUserId: null,
           });
@@ -367,8 +372,8 @@ export async function reconcileHistoricalServiceCredits(): Promise<ServiceCredit
         userId: user.id,
         username: lockedUser.username,
         amount: policyAdjustment,
-        transactionType: "credit_policy_reconciliation",
-        description: `Historical service policy correction: expected ${expected}, recorded ${usage.recorded}, missing-service charges ${missingCharge}`,
+        transactionType: CREDIT_POLICY_RECONCILIATION_MARKER,
+        description: `Historical service policy correction (${CREDIT_POLICY_RECONCILIATION_MARKER}): expected ${expected}, recorded ${usage.recorded}, missing-service charges ${missingCharge}`,
         balanceAfter: balance,
       });
       return { before: asNumber(lockedUser.credits), after: balance, missingRows };
