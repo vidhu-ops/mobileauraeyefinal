@@ -1,0 +1,17 @@
+{
+  "name": "AuraEye",
+  "install": "npm install",
+  "ports": [
+    {
+      "name": "auraeye",
+      "port": 5000
+    }
+  ],
+  "terminals": [
+    {
+      "name": "dev-server",
+      "command": "PORT=5000 npm run dev",
+      "description": "AuraEye dev server on port 5000"
+    }
+  ]
+}
